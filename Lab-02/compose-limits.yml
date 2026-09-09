@@ -1,9 +1,6 @@
-version: "3.8"
-
 services:
   mysql:
     image: mariadb:latest
-    command: '--default-authentication-plugin=mysql_native_password'
     deploy:
       replicas: 1
     restart: always

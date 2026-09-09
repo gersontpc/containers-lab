@@ -1,314 +1,161 @@
-## Aula 3 - Container Technologies
+# Lab-03 — CI/CD de uma aplicação no Amazon ECS
 
-### Preparando o ambiente no Cloud9
+## Contexto
 
-1. Criando o ambiente no Cloud9
+Após construir imagens Docker e executar serviços com Compose, o próximo passo é automatizar a entrega de uma aplicação em um ambiente de nuvem. Esse fluxo envolve provisionar infraestrutura, validar o código, publicar a imagem e atualizar os contêineres em execução com rastreabilidade entre commit e versão implantada.
 
-Vá até serviços e pesquise por `Cloud9`
+Neste laboratório, você vai utilizar **Terraform** para definir a infraestrutura na AWS e **GitHub Actions** para executar os workflows de provisionamento e deploy. A aplicação de exemplo utiliza **Python e Flask**, sua imagem é publicada no **Docker Hub** e sua execução é gerenciada pelo **Amazon ECS**. O **GitHub Codespaces** será o ambiente de edição do código; os workflows serão executados nos runners do GitHub Actions.
 
-![cloud9](img/cloud9-00.png)
+O laboratório está dividido em duas etapas: primeiro, provisionar a infraestrutura compartilhada e depois realizar o deploy da aplicação, na infraestrutura provisionada.
 
-2. Em Cloud9 crie em `Create environment`:
+## Objetivos
 
-![cloud9](img/cloud9-01.png)
+- Provisionar infraestrutura como código e manter o state do Terraform em um backend S3.
+- Configurar secrets e variáveis utilizados pelos workflows para acessar AWS e Docker Hub.
+- Executar validações de infraestrutura com as ferramentas previstas no roteiro: TFLint, tfsec e terraform-docs.
+- Automatizar testes da aplicação, build da imagem, análise de vulnerabilidades com Trivy e publicação no Docker Hub.
+- Identificar a imagem por uma tag que combina a versão da aplicação e parte do SHA do commit.
+- Atualizar a task definition e realizar o deploy do serviço no ECS.
+- Validar a execução das tasks e acessar a aplicação pelo Network Load Balancer.
 
-3. Preencha os campos conforme as instruções abaixo:
+## Workflow
 
-- **Details:**  
-**Name:** container-technologies  
-**Environment type:** New EC2 instance  
+### CI/CD - Infra
 
-- **New EC2 instance:**  
-Selecione **Instance Type:** t3.small (2GiB RAM + 2vCPU)  
-**Plataform:** Ubuntu Server 22.04 LTS  
+![](./infra/img/cicd-infra.png)
 
-- **Network settings**  
-Selecione: **Secure Shell (SSH)**
+### CI/CD/CD - App
 
-![cloud9](img/cloud9-02.png)
+![](./app/img/lab-cicd.png)
 
-4. E por último clique em **Create**
+## Serviços e ferramentas utilizadas no laboratório
 
-![cloud9](img/cloud9-04.png)
+| Componente | Responsabilidade |
+| --- | --- |
+| GitHub | Versionar o código da aplicação, os arquivos Terraform e os workflows. |
+| GitHub Codespaces | Disponibilizar editor e terminal para desenvolver os arquivos do laboratório. |
+| GitHub Actions | Executar os processos de validação, build, publicação e deploy. |
+| Terraform | Declarar e provisionar os recursos da AWS utilizados pela aplicação. |
+| Amazon S3 | Armazenar o state remoto do Terraform. |
+| Docker Hub | Armazenar as imagens publicadas pela pipeline da aplicação. |
+| Amazon ECS | Gerenciar o serviço e as tasks que executam os contêineres. |
+| Task definition | Definir imagem, recursos, portas, roles e configuração de logs dos contêineres. |
+| Network Load Balancer (NLB) | Receber as conexões e encaminhá-las às tasks pelo target group. |
+| Amazon CloudWatch Logs | Receber os logs da aplicação conforme a configuração da task definition. |
 
-5. Aguarde a criação do ambiente
+No roteiro, o acesso à aplicação segue o caminho **cliente → DNS do NLB → listener TCP na porta 80 → target group → aplicação na porta 8000**.
 
-![cloud9](img/cloud9-05.png)
+## Arquitetura do laboratório
 
-6. Enquanto cria o ambiente, vá no serviço EC2:
+O Network Load Balancer recebe as requisições pelo listener TCP na porta 80, que as encaminha ao target group. O target group direciona o tráfego para os IPs das tasks na porta 8000. O serviço no Amazon ECS com AWS Fargate mantém três tasks em execução, representadas por um único bloco.
 
-![cloud9](img/cloud9-06.png)
+```mermaid
+flowchart LR
+    usuario["Usuário"]
 
-7. Selecione a instância criada `aws-cloud9-container-technologies-<ID/>`:
-- Ao selecionar a instância, desça até a final da página e clique na aba **Security** e depois em  **Security Groups** clique no Segurity Group da instância.
+    subgraph aws["AWS Cloud"]
+        subgraph vpc["Amazon VPC"]
+            nlb["Elastic Load Balancing<br/>Network Load Balancer"]
+            listener["Listener<br/>TCP :80"]
+            tg["Target Group<br/>Targets por IP"]
+            ecs["Amazon ECS / AWS Fargate<br/>Aplicação Flask · 3 tasks"]
+        end
+        logs["Amazon CloudWatch<br/>Logs da aplicação"]
+    end
 
+    usuario -->|"HTTP :80"| nlb
+    nlb --> listener
+    listener -->|"Forward"| tg
+    tg -->|"TCP :8000"| ecs
+    ecs -.->|"Logs"| logs
 
-![cloud9](img/cloud9-07.png)
-
-8. No Security Group clique em **Edit inbound rules:**
-
-
-![cloud9](img/cloud9-08.png)
-
-9. Clique em **Save rules**, para salvar a regra criada
-
-![cloud9](img/cloud9-09.png)
-
-10. Vá novamente até o **Cloud9**, e clique em **Open**:
-
-![cloud9](img/cloud9-10.png)
-
-11. Conhecendo o **Cloud9**:
-
-![cloud9](img/cloud9-11.png)
-
-12. Clonando o repositório da aula
-
-No terminal do Cloud9, execute o comando abaixo:
-
-```shell
-git clone https://github.com/gersontpc/container-technologies.git
+    classDef networking fill:#8C4FFF,stroke:#693BC2,color:#fff
+    classDef compute fill:#ED7100,stroke:#B35500,color:#fff
+    classDef management fill:#E7157B,stroke:#B01060,color:#fff
+    classDef client fill:#232F3E,stroke:#232F3E,color:#fff
+    class nlb,listener,tg networking
+    class ecs compute
+    class logs management
+    class usuario client
+    style aws fill:#fff,stroke:#232F3E,color:#232F3E
+    style vpc fill:#F5F3FA,stroke:#8C4FFF,color:#232F3E
 ```
 
-### Exercicio 3 - docker compose (Wordpress)
+O provisionamento é automatizado por GitHub Actions e Terraform, com state no S3. As tasks utilizam a imagem publicada no Docker Hub. A VPC e as subnets já existem e são referenciadas pelo Terraform.
 
-Após clonar o repositório, iremos acessar o diretório 
+## Pré-requisitos
 
-13. Acesse o diretório Lab-03:
-```shell
-cd container-technologies/Lab-03/
-```
+- Ter concluído o [Lab-01 — Imagens Docker](../Lab-01/README.md) e o [Lab-02 — Docker Compose](../Lab-02/README.md), ou possuir conhecimento equivalente.
+- Ter acesso ao **AWS Academy Learner Lab** disponibilizado pelo professor, com sessão ativa e saldo suficiente para o exercício.
+- Possuir uma conta GitHub com permissão para configurar Actions, secrets, variáveis e Codespaces no repositório de trabalho.
+- Possuir uma conta Docker Hub e um token com permissão para publicar imagens.
+- Conhecer comandos básicos de Git e a estrutura de arquivos YAML e Dockerfile.
 
-14. Execute o comando `docker compose up -d` para iniciar os serviços do wordpress
+## Organização e ordem de execução
 
-```shell
-docker compose up -d
-```
-![cloud9](img/compose-01.png)
+| Etapa | Roteiro | Entrega esperada |
+| --- | --- | --- |
+| 1. Infraestrutura | [Provisionar a infraestrutura](Infra/README.md) | S3, Cluster ECS, NLB e Security Group. |
+| 2. Aplicação | [Construir e implantar a aplicação](app/README.md) | Imagem publicada no Docker Hub e Serviço ECS deployado no cluster provisionado, com acesso via NLB. |
 
-Conteúdo do **compose.yaml**:
-```
-version: "3.8"
+As pastas `infra/` e `app/` deste laboratório contêm os roteiros. Siga as instruções de cada etapa para criar os arquivos executáveis e workflows no repositório de trabalho; os arquivos Markdown não executam o provisionamento.
 
-services:
-  mysql:
-    image: mariadb:latest
-    command: '--default-authentication-plugin=mysql_native_password'
-    deploy:
-      replicas: 1
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: senha1234
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: UserBlog
-      MYSQL_PASSWORD: PwdBlog
-    expose:
-      - 3306
-    volumes:
-      - database:/var/lib/mysql
-    networks:
-      - wordpress
+### Etapa 1 — Pipeline de infraestrutura
 
-  wordpress:
-    image: wordpress:latest
-    deploy:
-      replicas: 1
-    restart: always
-    environment:
-      WORDPRESS_DB_HOST: mysql
-      WORDPRESS_DB_USER: UserBlog
-      WORDPRESS_DB_PASSWORD: PwdBlog
-      WORDPRESS_DB_NAME: wordpress
-    volumes:
-      - wordpress:/var/www/html
-    ports:
-      - 8080:80
-    networks:
-      - wordpress
-    depends_on:
-      - mysql
+Comece pelo [roteiro de infraestrutura](Infra/README.md):
 
-volumes:
-  database:
-  wordpress:
+1. Inicie a sessão no AWS Academy e obtenha as credenciais temporárias.
+2. Crie o bucket S3 que será utilizado como backend do Terraform.
+3. Prepare o repositório de trabalho e configure as secrets e a variável de região.
+4. Abra o repositório no Codespaces e prepare a branch `infra`.
+5. Crie o workflow `Deploy Infra` e os arquivos Terraform definidos no roteiro.
+6. Envie as alterações para a branch `infra`, acompanhe o workflow e valide os recursos no console AWS.
 
-networks:
-  wordpress:
-    driver: bridge
+**Ponto de verificação:** conclua o provisionamento e confirme os recursos antes de iniciar o deploy da aplicação. A segunda etapa depende dessa infraestrutura.
 
-```
-15. Após subir a stack do wordpress, execute o comando abaixo
+### Etapa 2 — Pipeline da aplicação
 
+Com a infraestrutura disponível, siga o [roteiro da aplicação](app/README.md):
 
-```shell
-URL="http://$(aws ec2 describe-instances \
-    --instance-ids $(curl -s http://169.254.169.254/latest/meta-data/instance-id) \
-    --query "Reservations[0].Instances[0].PublicIpAddress" --output text):8080" && echo $URL
-```
-Output:
-```shellscript
-http://44.202.53.105:8080
-```
+1. Trabalhe na branch `main` e crie a aplicação Flask, seus testes e o Dockerfile.
+2. Configure as credenciais do Docker Hub no GitHub Actions.
+3. Prepare a task definition e os arquivos Terraform do deploy.
+4. Crie o workflow `Deploy App`, que executa testes, constrói a imagem, verifica vulnerabilidades e publica o artefato.
+5. Envie as alterações para `main` e acompanhe a atualização do serviço no ECS.
+6. Verifique as tasks, os health checks e a resposta da aplicação pelo DNS do NLB.
 
-16. Copie a URL e cole em seu navegador para abrir o frontend do wordpress
+**Ponto de verificação:** a imagem referenciada no deploy deve corresponder à tag produzida no job de build da mesma execução.
 
-Selecione **Português do Brasil** e clique em **Continuar**
+## Branches e gatilhos dos workflows
 
-![cloud9](img/wordpress-01.png)
+| Branch | Workflow | Gatilho definido nos exemplos |
+| --- | --- | --- |
+| `infra` | `Deploy Infra` | Push na branch `infra`. |
+| `main` | `Deploy App` | Push na branch `main`. |
 
-17. Preencha a tela de boas vindas  
-**Título do site:** container-technologies  
-**Nome do usuário:** wpuser  
-**O seu e-mail:** seu e-mail da faculdade <e-mail>  
-Em seguida clique em **Instalar Wordpress**
+Um merge nessas branches também gera um push e pode iniciar o workflow correspondente. Confira a branch antes de enviar alterações, pois os workflows podem modificar recursos na AWS.
 
-18. Na tela de login coloque o usuário *wpuser* e a senha gerada.
+A pipeline de infraestrutura mantém o ambiente necessário para a execução. A pipeline da aplicação produz uma nova imagem e atualiza o serviço para utilizá-la. Essa separação permite alterar o código da aplicação sem executar novamente todo o provisionamento da infraestrutura compartilhada.
 
-**Nome de usuário ou endereço de e-mail:** wpuser  
-**Senha:** `fn6x@N)SIgRT$o!17T`  
-![cloud9](img/wordpress-03.png)
+## Validação do lab
 
-19. Ao acessar o console de administração do wordpress, no canto superior esquerdo, clique em **container-technologies**
+- [ ] O workflow `Deploy Infra` concluiu o provisionamento.
+- [ ] O state da infraestrutura está armazenado no bucket S3 configurado.
+- [ ] Os testes da aplicação e a verificação de vulnerabilidades passaram conforme os critérios do workflow.
+- [ ] A imagem está publicada no Docker Hub com a tag gerada pela pipeline.
+- [ ] O serviço ECS utiliza a task definition com a imagem dessa execução.
+- [ ] As tasks previstas estão em execução e os health checks indicam uma aplicação saudável.
+- [ ] A aplicação responde pelo DNS do NLB.
 
-![cloud9](img/wordpress-04.png)
+## Encerramento do ambiente
 
-20. Pronto! Site do wordpress criado com sucesso!
+Ao finalizar, remova os recursos provisionados para evitar consumo desnecessário do saldo do laboratório. A ordem deve respeitar as dependências: primeiro os recursos do deploy da aplicação e depois a infraestrutura compartilhada.
 
-![cloud9](img/wordpress-05.png)
+Depois, encerre a sessão do AWS Academy e pare ou exclua o Codespaces, salvando antes o trabalho que deseja manter. Parar o Codespaces não remove os recursos provisionados na AWS.
 
-21. Agora vamos definir os limites dos contêineres do nosso serviço, executando o comando abaixo
+## Material de apoio
 
-```shell
-docker compose -f compose-limits.yml up -d
-```
-22. Vamos escalar as réplicas dos contêineres do mysql
-
-```shell
-docker compose scale mysql=3
-```
-
-Output:
-```shell
-[+] Running 3/3
- ✔ Container Lab-03-mysql-3  Started            0.1s  
- ✔ Container Lab-03-mysql-1  Started            0.5s   
- ✔ Container Lab-03-mysql-2  Started            0.1s 
-```
-
-23. Liste os contêineres dos serviços
-
-```shell
-docker compose ps
-```
-
-Output:
-```output
-NAME                IMAGE              COMMAND                  SERVICE     CREATED              STATUS                                  PORTS
-Lab-03-mysql-1       mariadb:latest     "docker-entrypoint.s…"   mysql       About a minute ago   Restarting (1) Less than a second ago   
-Lab-03-mysql-2       mariadb:latest     "docker-entrypoint.s…"   mysql       About a minute ago   Restarting (1) Less than a second ago   
-Lab-03-mysql-3       mariadb:latest     "docker-entrypoint.s…"   mysql       About a minute ago   Up About a minute                       3306/tcp
-Lab-03-wordpress-1   wordpress:latest   "docker-entrypoint.s…"   wordpress   2 minutes ago        Up 2 minutes                            0.0.0.0:8080->80/tcp, :::8080->80/tcp
-```
-
-24. Setando os limites dos contêineres:
-
-```shell
-docker compose -f compose-limits.yml up -d
-WARN[0000] /home/ubuntu/environment/container-technologies/Lab-03/compose-limits.yml: `version` is obsolete 
-[+] Running 2/3
- ⠧ Network Lab-03_wordpress      Created          0.8s 
- ✔ Container Lab-03-mysql-1      Started          0.3s 
- ✔ Container Lab-03-wordpress-1  Started          0.6s 
-```
-Conteúdo do **compose-limits.yaml**
-
-```docker-compose
-version: "3.8"
-
-services:
-  mysql:
-    image: mariadb:latest
-    command: '--default-authentication-plugin=mysql_native_password'
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '1.5'
-          memory: 1024M
-        reservations:
-          cpus: '1'
-          memory: 512M
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: senha1234
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: UserBlog
-      MYSQL_PASSWORD: PwdBlog
-    expose:
-      - 3306
-    volumes:
-      - database:/var/lib/mysql
-    networks:
-      - wordpress
-
-  wordpress:
-    image: wordpress:latest
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    restart: always
-    environment:
-      WORDPRESS_DB_HOST: mysql
-      WORDPRESS_DB_USER: UserBlog
-      WORDPRESS_DB_PASSWORD: PwdBlog
-      WORDPRESS_DB_NAME: wordpress
-    volumes:
-      - wordpress:/var/www/html
-    ports:
-      - 8080:80
-    networks:
-      - wordpress
-    depends_on:
-      - mysql
-
-volumes:
-  database:
-  wordpress:
-
-networks:
-  wordpress:
-    driver: bridge
-```
-
-25. Limpando o ambiente
-
-Execute os comandos:
-```shell
-docker compose -f compose-limits.yml down
-```
-
-```shell
-docker system prune -a
-````
-Output: (pressione a tecla: y)
-
-```output
-WARNING! This will remove:
-  - all stopped containers
-  - all networks not used by at least one container
-  - all images without at least one container associated to them
-  - all build cache
-
-Are you sure you want to continue? [y/N] y
-```
-
-Laboratório concluído com sucesso!
-
-### Conclusão
-Neste laboratório, você aprendeu a configurar e gerenciar serviços utilizando Docker Compose. Foi possível criar um ambiente de desenvolvimento no Cloud9, clonar um repositório e configurar uma stack do WordPress com um banco de dados MySQL. Além disso, você aprendeu a definir limites de recursos para os contêineres, escalar serviços e limpar o ambiente Docker. Esses conhecimentos são essenciais para a orquestração de contêineres e garantem que suas aplicações estejam bem gerenciadas e otimizadas. Parabéns por concluir o laboratório com sucesso!
+- [GitHub Actions — infraestrutura](Infra/github-actions.md)
+- [Terraform — infraestrutura](Infra/terraform.md)
+- [GitHub Actions — aplicação](app/github-actions.md)
+- [Terraform — aplicação](app/terraform.md)
